@@ -139,6 +139,11 @@ func bkn_set_done(id, nd, now) {
 }
 
 func bkn_del(id) {
+    // tombstone first so suite sync propagates the delete instead of
+    // resurrecting the record on the next pass
+    now := now_ms()
+    bkn_req("POST", "/v1/store/sync/tombstones",
+        "{\"ref\":\"m365/tasks\",\"id\":" + json(id) + ",\"_mtime\":" + str(now) + "}")
     bkn_req("DELETE", "/v1/store/m365/tasks/" + id, "")
     keep := []Task{}
     i := 0
