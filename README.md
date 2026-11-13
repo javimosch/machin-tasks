@@ -3,11 +3,20 @@
 A get-things-done task list for [machin-365](https://github.com/javimosch/machin-365)
 — offline-first, native, single binary. Part of the Machin desktop ecosystem.
 
-- Tasks in local SQLite — works with no account, no server, no network
+- Two data backends, picked automatically at launch (sticky for the session):
+  - **local bkn** (preferred): the suite-managed bkn at
+    `$MACHIN_365_HOME/config.json` → `local_port`/`local_token`, collection
+    `m365/tasks`. `machin-365 run` auto-starts the service; changes made by
+    `machin-365 sync` appear within ~5s. Every write stamps `_mtime` for
+    last-writer-wins sync.
+  - **SQLite fallback**: `$MDK_TASKS_DB` >
+    `$MACHIN_365_HOME/data/tasks/tasks.db` > `~/.local/share/mdk-tasks/tasks.db`
+    — used when no bkn endpoint is configured or reachable.
+- Force a backend with `MDK_TASKS_BACKEND=bkn|sqlite`, or point at any bkn
+  with `MDK_TASKS_BKN_URL` + `MDK_TASKS_BKN_TOKEN`.
+- Note: **deletes do not propagate through suite sync yet** (tombstones
+  pending) — a task deleted locally can reappear after sync.
 - Add (Enter or button), toggle done, delete, filter Active/Done/All
-- Data lives in `$MACHIN_365_HOME/data/tasks/tasks.db` when installed via the
-  suite, `~/.local/share/mdk-tasks/tasks.db` standalone, or `$MDK_TASKS_DB`
-- Sync to a machin-bkn server is planned (phase 2)
 
 ## Build
 

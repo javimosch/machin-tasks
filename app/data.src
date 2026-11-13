@@ -1,9 +1,155 @@
-// data.src — tasks live in SQLite, one row per task.
-// DB path priority: $MDK_TASKS_DB > $MACHIN_365_HOME/data/tasks/tasks.db >
-// ~/.local/share/mdk-tasks/tasks.db — the app runs standalone or as a
-// suite citizen with no code change. Sync to a machin-bkn server is phase 2.
+// data.src — tasks live behind a tiny backend seam.
+//
+// Primary: the suite-managed local bkn (HTTP store API). Endpoint resolves
+// from $MDK_TASKS_BKN_URL (+$MDK_TASKS_BKN_TOKEN), else
+// $MACHIN_365_HOME/config.json local_port/local_token. Probed once at first
+// use via /_health; the choice is sticky for the session so data never
+// silently splits across backends — start `machin-365 service start`
+// BEFORE launching the app to get bkn mode.
+//
+// Fallback: SQLite at $MDK_TASKS_DB > $MACHIN_365_HOME/data/tasks/tasks.db >
+// ~/.local/share/mdk-tasks/tasks.db. Force either with
+// $MDK_TASKS_BACKEND=bkn|sqlite.
+//
+// bkn mode caches the collection in memory and re-polls every 5s, so
+// `machin-365 sync` changes appear without restart. Every write sets
+// _mtime (ms) — that is the field suite sync uses for last-writer-wins.
+// Deletes do NOT propagate through sync yet (tombstones pending).
 
-type Task struct { id int  title string  done int  created int }
+type Task struct { id string  title string  done int  created int }
+type BknCfg struct { local_port int  local_token string }
+
+var g_backend = 0        // 0 unknown, 1 bkn, 2 sqlite
+var g_bkn_url = ""
+var g_bkn_tok = ""
+var g_tasks = []Task{}
+var g_poll = 0
+
+func jstr(j, path) {
+    v, e := json_get(j, path)
+    if e != "" { return "" }
+    return parse(v, "")
+}
+
+func jint(j, path) {
+    v, e := json_get(j, path)
+    if e != "" { return 0 }
+    return parse_int(trim(v))
+}
+
+func task_from_json(r) (t) {
+    t = Task{id: jstr(r, ".id"), title: jstr(r, ".title"),
+        done: jint(r, ".done"), created: jint(r, ".created")}
+    return t
+}
+
+// --- backend selection -------------------------------------------------
+
+func bkn_endpoint() {
+    u := env("MDK_TASKS_BKN_URL")
+    if u != "" {
+        g_bkn_tok = env("MDK_TASKS_BKN_TOKEN")
+        return u
+    }
+    h := env("MACHIN_365_HOME")
+    if h == "" { return "" }
+    s := read_file(h + "/config.json")
+    if s == "" { return "" }
+    c := parse(s, BknCfg{})
+    if c.local_port == 0 || c.local_token == "" { return "" }
+    g_bkn_url = "http://127.0.0.1:" + str(c.local_port)
+    g_bkn_tok = c.local_token
+    return g_bkn_url
+}
+
+func probe() {
+    if g_backend != 0 { return }
+    forced := env("MDK_TASKS_BACKEND")
+    if forced == "sqlite" { g_backend = 2  return }
+    if forced == "bkn" { g_backend = 1  g_bkn_url = bkn_endpoint()  return }
+    u := bkn_endpoint()
+    if u == "" { g_backend = 2  return }
+    st, _, _ := http_get(u + "/_health")
+    if st == 200 { g_backend = 1 } else { g_backend = 2 }
+}
+
+// --- bkn http ------------------------------------------------------------
+
+func bkn_req(method, path, body) (resp) {
+    resp = ""
+    st, r, err := http_request(method, g_bkn_url + path,
+        []string{"Authorization: Bearer " + g_bkn_tok, "Content-Type: application/json"}, body)
+    if err != "" || (st != 200 && st != 201) { return resp }
+    return r
+}
+
+func bkn_refresh() {
+    body := bkn_req("GET", "/v1/store/m365/tasks?limit=500", "")
+    if body == "" { return }
+    ts := []Task{}
+    i := 0
+    while true {
+        r, e := json_get(body, ".records[" + str(i) + "]")
+        if e != "" { break }
+        ts = append(ts, task_from_json(r))
+        i = i + 1
+    }
+    g_tasks = sort_tasks(ts)
+}
+
+func sort_tasks(ts) {
+    // active first (done=0), then newest created — mirrors old SQL ORDER BY
+    i := 1
+    while i < len(ts) {
+        t := ts[i]
+        j := i
+        while j > 0 && (ts[j-1].done > t.done ||
+            (ts[j-1].done == t.done && ts[j-1].created < t.created)) {
+            ts[j] = ts[j-1]
+            j = j - 1
+        }
+        ts[j] = t
+        i = i + 1
+    }
+    return ts
+}
+
+func bkn_add(title, now) {
+    body := "{\"title\":" + json(title) + ",\"done\":0,\"created\":" +
+        str(now) + ",\"_mtime\":" + str(now) + "}"
+    resp := bkn_req("POST", "/v1/store/m365/tasks", body)
+    id := jstr(resp, ".record.id")
+    if id == "" { return }
+    g_tasks = append(g_tasks, Task{id: id, title: title, done: 0, created: now})
+    g_tasks = sort_tasks(g_tasks)
+}
+
+func bkn_set_done(id, nd, now) {
+    bkn_req("PATCH", "/v1/store/m365/tasks/" + id,
+        "{\"done\":" + str(nd) + ",\"_mtime\":" + str(now) + "}")
+    i := 0
+    while i < len(g_tasks) {
+        if g_tasks[i].id == id {
+            g_tasks[i].done = nd
+            break
+        }
+        i = i + 1
+    }
+    g_tasks = sort_tasks(g_tasks)
+}
+
+func bkn_del(id) {
+    bkn_req("DELETE", "/v1/store/m365/tasks/" + id, "")
+    keep := []Task{}
+    i := 0
+    while i < len(g_tasks) {
+        if g_tasks[i].id != id { keep = append(keep, g_tasks[i]) }
+        i = i + 1
+    }
+    g_tasks = keep
+}
+
+// --- sqlite fallback ----------------------------------------------------
 
 func db_path() {
     p := env("MDK_TASKS_DB")
@@ -35,31 +181,102 @@ func db() {
     return g_db
 }
 
-func task_list() (ts) {
-    ts = []Task{}
+func sql_refresh() {
+    g_tasks = []Task{}
     d := db()
-    if d == 0 { return ts }
+    if d == 0 { return }
     rows := sqlite_query(d, "SELECT id, title, done, created FROM tasks ORDER BY done ASC, created DESC")
-    if rows == "" || rows == "[]" { return ts }
-    return parse(rows, []Task{})
+    if rows == "" || rows == "[]" { return }
+    i := 0
+    while true {
+        r, e := json_get(rows, "[" + str(i) + "]")
+        if e != "" { break }
+        g_tasks = append(g_tasks, Task{id: str(jint(r, ".id")),
+            title: jstr(r, ".title"), done: jint(r, ".done"),
+            created: jint(r, ".created")})
+        i = i + 1
+    }
+}
+
+func sql_add(title, now) {
+    d := db()
+    if d == 0 { return }
+    sqlite_exec(d, "INSERT INTO tasks (title, done, created) VALUES (?, 0, ?)", []string{title, str(now)})
+    sql_refresh()
+}
+
+func sql_set_done(id, nd) {
+    d := db()
+    if d == 0 { return }
+    sqlite_exec(d, "UPDATE tasks SET done = ? WHERE id = ?", []string{str(nd), id})
+    sql_refresh()
+}
+
+func sql_del(id) {
+    d := db()
+    if d == 0 { return }
+    sqlite_exec(d, "DELETE FROM tasks WHERE id = ?", []string{id})
+    sql_refresh()
+}
+
+// --- public API (used by app.src) ---------------------------------------
+
+func task_list() (ts) {
+    probe()
+    if g_backend == 1 {
+        if now_ms() - g_poll > 5000 {
+            bkn_refresh()
+            g_poll = now_ms()
+        }
+        return g_tasks
+    }
+    if now_ms() - g_poll > 1000 {
+        sql_refresh()
+        g_poll = now_ms()
+    }
+    return g_tasks
 }
 
 func add_task(title) {
     t := trim(title)
     if t == "" { return }
-    d := db()
-    if d == 0 { return }
-    sqlite_exec(d, "INSERT INTO tasks (title, done, created) VALUES (?, 0, ?)", []string{t, str(now_ms())})
+    probe()
+    now := now_ms()
+    if g_backend == 1 {
+        bkn_add(t, now)
+    } else {
+        sql_add(t, now)
+    }
 }
 
 func toggle_task(id) {
-    d := db()
-    if d == 0 { return }
-    sqlite_exec(d, "UPDATE tasks SET done = 1 - done WHERE id = ?", []string{str(id)})
+    probe()
+    if g_backend == 1 {
+        i := 0
+        while i < len(g_tasks) {
+            if g_tasks[i].id == id {
+                bkn_set_done(id, 1 - g_tasks[i].done, now_ms())
+                return
+            }
+            i = i + 1
+        }
+        return
+    }
+    i := 0
+    while i < len(g_tasks) {
+        if g_tasks[i].id == id {
+            sql_set_done(id, 1 - g_tasks[i].done)
+            return
+        }
+        i = i + 1
+    }
 }
 
 func delete_task(id) {
-    d := db()
-    if d == 0 { return }
-    sqlite_exec(d, "DELETE FROM tasks WHERE id = ?", []string{str(id)})
+    probe()
+    if g_backend == 1 {
+        bkn_del(id)
+    } else {
+        sql_del(id)
+    }
 }
