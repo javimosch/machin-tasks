@@ -1,0 +1,65 @@
+// data.src — tasks live in SQLite, one row per task.
+// DB path priority: $MDK_TASKS_DB > $MACHIN_365_HOME/data/tasks/tasks.db >
+// ~/.local/share/mdk-tasks/tasks.db — the app runs standalone or as a
+// suite citizen with no code change. Sync to a machin-bkn server is phase 2.
+
+type Task struct { id int  title string  done int  created int }
+
+func db_path() {
+    p := env("MDK_TASKS_DB")
+    if p != "" { return p }
+    h := env("MACHIN_365_HOME")
+    if h != "" { return h + "/data/tasks/tasks.db" }
+    return env("HOME") + "/.local/share/mdk-tasks/tasks.db"
+}
+
+func dir_of(p) {
+    i := len(p)
+    while i > 0 {
+        i = i - 1
+        if substr(p, i, i + 1) == "/" { return substr(p, 0, i) }
+    }
+    return "."
+}
+
+var g_db = 0
+
+func db() {
+    if g_db != 0 { return g_db }
+    p := db_path()
+    system("mkdir -p '" + dir_of(p) + "'")
+    g_db = sqlite_open(p)
+    if g_db == 0 { return 0 }
+    sqlite_exec(g_db, "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL)")
+    sqlite_exec(g_db, "CREATE INDEX IF NOT EXISTS tasks_done ON tasks(done, created)")
+    return g_db
+}
+
+func task_list() (ts) {
+    ts = []Task{}
+    d := db()
+    if d == 0 { return ts }
+    rows := sqlite_query(d, "SELECT id, title, done, created FROM tasks ORDER BY done ASC, created DESC")
+    if rows == "" || rows == "[]" { return ts }
+    return parse(rows, []Task{})
+}
+
+func add_task(title) {
+    t := trim(title)
+    if t == "" { return }
+    d := db()
+    if d == 0 { return }
+    sqlite_exec(d, "INSERT INTO tasks (title, done, created) VALUES (?, 0, ?)", []string{t, str(now_ms())})
+}
+
+func toggle_task(id) {
+    d := db()
+    if d == 0 { return }
+    sqlite_exec(d, "UPDATE tasks SET done = 1 - done WHERE id = ?", []string{str(id)})
+}
+
+func delete_task(id) {
+    d := db()
+    if d == 0 { return }
+    sqlite_exec(d, "DELETE FROM tasks WHERE id = ?", []string{str(id)})
+}

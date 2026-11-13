@@ -1,0 +1,136 @@
+// app.src — Tasks: a minimal offline-first task list.
+// New task: type in the field, press Enter or Add. Click a row's checkbox
+// zone to toggle done; the × button deletes. Tabs filter All / Active / Done.
+
+func tab(label, active) {
+    i := row()
+    padxy(14.0, 7.0)
+    radius(7.0)
+    center()
+    if active {
+        bg(C_ACCENT)
+    } else if hovered(i) {
+        bg(C_SURFACE2)
+        mdk_cursor(2)
+    }
+    text(label, 13.0)
+    if active {
+        fg(0xFFFFFFFF)
+    } else {
+        fg(C_MUTED)
+    }
+    end()
+    return clicked(i)
+}
+
+func icon_btn(s) {
+    i := row()
+    size(26.0, 26.0)
+    radius(6.0)
+    center()
+    if hovered(i) {
+        bg(C_DANGER)
+        mdk_cursor(2)
+    } else {
+        bg(C_SURFACE2)
+    }
+    text(s, 14.0)
+    fg(C_MUTED)
+    end()
+    return clicked(i)
+}
+
+// returns 0 = nothing, 1 = toggle done, 2 = delete
+func task_row(t) (act) {
+    act = 0
+    i := row()
+    fillw()
+    padxy(10.0, 8.0)
+    radius(8.0)
+    gap(10.0)
+    align(A_CENTER)
+    if hovered(i) { bg(0x1F1F26FF) }
+    j := row()
+    grow(1.0)
+    gap(10.0)
+    align(A_CENTER)
+    md_task(t.done == 1)
+    text(t.title, 14.0)
+    if t.done == 1 { fg(C_MUTED) }
+    end()
+    if clicked(j) { act = 1 }
+    if icon_btn("×") { act = 2 }
+    end()
+    return act
+}
+
+func view() {
+    tasks := task_list()
+    filter := state_str("filter", "active")
+    open := 0
+    k := 0
+    while k < len(tasks) {
+        if tasks[k].done == 0 { open = open + 1 }
+        k = k + 1
+    }
+
+    col()
+    fill()
+    pad(24.0)
+    gap(16.0)
+        row()
+        fillw()
+        gap(12.0)
+            text("Tasks", 26.0)
+            bold()
+            spacer()
+            badge(str(open) + " open", C_ACCENT)
+        end()
+
+        row()
+        gap(8.0)
+            if tab("Active", filter == "active") { set_str("filter", "active") }
+            if tab("Done", filter == "done") { set_str("filter", "done") }
+            if tab("All", filter == "all") { set_str("filter", "all") }
+        end()
+
+        row()
+        gap(10.0)
+            draft := text_field("new", "Add a task…")
+            fillw()
+            if button("Add") || (focused("new") && key(K_RETURN)) {
+                if trim(draft) != "" {
+                    add_task(draft)
+                    set_str("new", "")
+                    set_int("new:caret", 0)
+                }
+            }
+        end()
+
+        sv := scroll_view("tasks")
+        fill()
+        gap(6.0)
+            shown := 0
+            i := 0
+            while i < len(tasks) {
+                t := tasks[i]
+                if filter == "all" || (filter == "active" && t.done == 0) || (filter == "done" && t.done == 1) {
+                    act := task_row(t)
+                    if act == 1 { toggle_task(t.id) }
+                    if act == 2 { delete_task(t.id) }
+                    shown = shown + 1
+                }
+                i = i + 1
+            }
+            if shown == 0 {
+                col()
+                fillw()
+                center()
+                pad(40.0)
+                    text("Nothing here", 15.0)
+                    fg(C_MUTED)
+                end()
+            }
+        end()
+    end()
+}
