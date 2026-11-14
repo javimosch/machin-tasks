@@ -22,7 +22,7 @@ jobs:
         run: |
           git clone --depth 1 --filter=blob:none --sparse \
             https://github.com/javimosch/machin-desktop.git /tmp/machin-desktop
-          git -C /tmp/machin-desktop sparse-checkout set mdk framework
+          git -C /tmp/machin-desktop sparse-checkout set --skip-checks mdk framework
 
       - name: Typecheck app
         run: /tmp/machin-desktop/mdk check app/
