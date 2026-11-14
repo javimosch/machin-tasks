@@ -11,6 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install font/text deps (mdk pkg-config)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfreetype6-dev libharfbuzz-dev
+
       - name: Install machin v0.142.0
         run: |
           curl -fsSL -o /tmp/machin \
