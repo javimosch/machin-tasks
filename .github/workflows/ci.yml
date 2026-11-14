@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install machin v0.142.0
+        run: |
+          curl -fsSL -o /tmp/machin \
+            https://github.com/javimosch/machin/releases/download/v0.142.0/machin-v0.142.0-linux-amd64
+          chmod +x /tmp/machin
+          sudo mv /tmp/machin /usr/local/bin/machin
+
+      - name: Fetch mdk + framework (sparse)
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/javimosch/machin-desktop.git /tmp/machin-desktop
+          git -C /tmp/machin-desktop sparse-checkout set mdk framework
+
+      - name: Typecheck app
+        run: /tmp/machin-desktop/mdk check app/
