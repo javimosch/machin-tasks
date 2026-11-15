@@ -5,9 +5,11 @@ A get-things-done task list for [machin-365](https://github.com/javimosch/machin
 
 - Two data backends, picked automatically at launch (sticky for the session):
   - **local bkn** (preferred): the suite-managed bkn at
-    `$MACHIN_365_HOME/config.json` → `local_port`/`local_token`, collection
-    `m365/tasks`. `machin-365 run` auto-starts the service; changes made by
-    `machin-365 sync` appear within ~5s. Every write stamps `_mtime` for
+    `$MACHIN_365_HOME/config.json` (default
+    `~/.local/share/machin-365/config.json`) → `local_port`/`local_token`,
+    collection `m365/tasks`. `machin-365 run` auto-starts the service;
+    changes made by `machin-365 sync` appear within ~5s. Every write stamps
+    `_mtime` for
     last-writer-wins sync.
   - **SQLite fallback**: `$MDK_TASKS_DB` >
     `$MACHIN_365_HOME/data/tasks/tasks.db` > `~/.local/share/mdk-tasks/tasks.db`
