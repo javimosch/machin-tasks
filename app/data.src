@@ -2,7 +2,8 @@
 //
 // Primary: the suite-managed local bkn (HTTP store API). Endpoint resolves
 // from $MDK_TASKS_BKN_URL (+$MDK_TASKS_BKN_TOKEN), else
-// $MACHIN_365_HOME/config.json local_port/local_token. Probed once at first
+// $MACHIN_365_HOME/config.json local_port/local_token, defaulting to
+// ~/.local/share/machin-365/config.json when the var is unset. Probed once at first
 // use via /_health; the choice is sticky for the session so data never
 // silently splits across backends — start `machin-365 service start`
 // BEFORE launching the app to get bkn mode.
@@ -52,7 +53,7 @@ func bkn_endpoint() {
         return u
     }
     h := env("MACHIN_365_HOME")
-    if h == "" { return "" }
+    if h == "" { h = env("HOME") + "/.local/share/machin-365" }
     s := read_file(h + "/config.json")
     if s == "" { return "" }
     c := parse(s, BknCfg{})
