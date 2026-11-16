@@ -124,16 +124,30 @@ func bkn_health_probe() {
     if pst == 200 { g_bkn_fails = 0 }
 }
 
+// bkn paginates at `limit` — walk offset until a short page or the list is
+// silently truncated at 500 (same loop as sync's fetch_records). g_tasks is
+// only swapped in after the LAST page lands, so a mid-fetch failure keeps
+// the previous full snapshot instead of a partial one. The page cap keeps a
+// server that ignores offset from spinning this inside the frame loop.
 func bkn_refresh() {
-    st, body, err := bkn_req("GET", "/v1/store/m365/tasks?limit=500", "")
-    if err != "" || st != 200 || body == "" { return }
     ts := []Task{}
-    i := 0
-    while true {
-        r, e := json_get(body, ".records[" + str(i) + "]")
-        if e != "" { break }
-        ts = append(ts, task_from_json(r))
-        i = i + 1
+    off := 0
+    pages := 0
+    while pages < 100 {
+        st, body, err := bkn_req("GET", "/v1/store/m365/tasks?limit=500&offset=" + str(off), "")
+        if err != "" || st != 200 || body == "" { return }
+        n := 0
+        i := 0
+        while true {
+            r, e := json_get(body, ".records[" + str(i) + "]")
+            if e != "" { break }
+            ts = append(ts, task_from_json(r))
+            i = i + 1
+            n = n + 1
+        }
+        if n < 500 { break }
+        off = off + 500
+        pages = pages + 1
     }
     g_tasks = sort_tasks(ts)
 }
