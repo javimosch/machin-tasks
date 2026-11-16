@@ -85,6 +85,17 @@ func view() {
             bold()
             spacer()
             badge(str(open) + " open", C_ACCENT)
+            serr := sync_error()
+            sseen := state_str("sync_err", "")
+            if serr != sseen {
+                set_str("sync_err", serr)
+                if serr != "" { animate() }
+            }
+            if serr != "" {
+                badge("sync error", C_DANGER)
+                text(serr, 12.0)
+                fg(C_MUTED)
+            }
         end()
 
         row()
@@ -99,8 +110,7 @@ func view() {
             draft := text_field("new", "Add a task…")
             fillw()
             if button("Add") || (focused("new") && key(K_RETURN)) {
-                if trim(draft) != "" {
-                    add_task(draft)
+                if trim(draft) != "" && add_task(draft) == 1 {
                     set_str("new", "")
                     set_int("new:caret", 0)
                 }

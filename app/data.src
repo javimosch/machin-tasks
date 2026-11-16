@@ -15,16 +15,29 @@
 // bkn mode caches the collection in memory and re-polls every 5s, so
 // `machin-365 sync` changes appear without restart. Every write sets
 // _mtime (ms) — that is the field suite sync uses for last-writer-wins.
-// Deletes do NOT propagate through sync yet (tombstones pending).
+// Deletes propagate through sync/tombstones: bkn_del writes the tombstone
+// BEFORE the DELETE, and only mutates g_tasks when both land.
+//
+// Writes are honest: a failed bkn call never touches g_tasks, the reason
+// is kept in g_bkn_err for the UI badge (sync_error), and consecutive
+// failures trigger a /_health re-probe so a restarted bkn is picked up
+// without an app restart. While on the sqlite fallback an unforced
+// backend re-probes every 60s and folds pending local tasks into bkn
+// when it comes up, so data never silently splits across backends.
 
 type Task struct { id string  title string  done int  created int }
 type BknCfg struct { local_port int  local_token string }
 
 var g_backend = 0        // 0 unknown, 1 bkn, 2 sqlite
+var g_backend_forced = 0 // MDK_TASKS_BACKEND was set
 var g_bkn_url = ""
 var g_bkn_tok = ""
 var g_tasks = []Task{}
 var g_poll = 0
+var g_bkn_err = ""       // why the last bkn call failed ("" = healthy)
+var g_bkn_err_at = 0     // now_ms() of that failure
+var g_bkn_fails = 0      // consecutive bkn call failures
+var g_reprobe_at = 0     // last mid-session backend re-probe
 
 func jstr(j, path) {
     v, e := json_get(j, path)
@@ -49,6 +62,7 @@ func task_from_json(r) (t) {
 func bkn_endpoint() {
     u := env("MDK_TASKS_BKN_URL")
     if u != "" {
+        g_bkn_url = u
         g_bkn_tok = env("MDK_TASKS_BKN_TOKEN")
         return u
     }
@@ -66,6 +80,7 @@ func bkn_endpoint() {
 func probe() {
     if g_backend != 0 { return }
     forced := env("MDK_TASKS_BACKEND")
+    if forced != "" { g_backend_forced = 1 }
     if forced == "sqlite" { g_backend = 2  return }
     if forced == "bkn" { g_backend = 1  g_bkn_url = bkn_endpoint()  return }
     u := bkn_endpoint()
@@ -76,17 +91,42 @@ func probe() {
 
 // --- bkn http ------------------------------------------------------------
 
-func bkn_req(method, path, body) (resp) {
-    resp = ""
-    st, r, err := http_request(method, g_bkn_url + path,
+// one bkn call -> (status, body, err). err=="" means a 2xx response
+// arrived; anything else — transport failure or non-2xx — comes back with
+// err set ("connect"/"dns"/... or "http <st>") and st 0 on transport
+// errors. Failures feed the counter behind sync_error() and trigger the
+// mid-session re-probe, so a dead bkn is visible instead of silent.
+func bkn_req(method, path, body) {
+    st, resp, err := http_request(method, g_bkn_url + path,
         []string{"Authorization: Bearer " + g_bkn_tok, "Content-Type: application/json"}, body)
-    if err != "" || (st != 200 && st != 201) { return resp }
-    return r
+    if err == "" && st >= 200 && st < 300 {
+        g_bkn_fails = 0
+        g_bkn_err = ""
+    } else {
+        if err == "" { err = "http " + str(st) }
+        g_bkn_fails = g_bkn_fails + 1
+        g_bkn_err = err
+        g_bkn_err_at = now_ms()
+        bkn_health_probe()
+    }
+    return st, resp, err
+}
+
+// while bkn keeps failing, re-check /_health every 30s so a service that
+// was restarted mid-session is noticed without an app restart; a healthy
+// answer resets the failure streak early (the next real call clears the
+// error badge itself).
+func bkn_health_probe() {
+    if g_bkn_fails < 4 { return }
+    if now_ms() - g_reprobe_at < 30000 { return }
+    g_reprobe_at = now_ms()
+    pst, _, _ := http_get(g_bkn_url + "/_health")
+    if pst == 200 { g_bkn_fails = 0 }
 }
 
 func bkn_refresh() {
-    body := bkn_req("GET", "/v1/store/m365/tasks?limit=500", "")
-    if body == "" { return }
+    st, body, err := bkn_req("GET", "/v1/store/m365/tasks?limit=500", "")
+    if err != "" || st != 200 || body == "" { return }
     ts := []Task{}
     i := 0
     while true {
@@ -115,19 +155,30 @@ func sort_tasks(ts) {
     return ts
 }
 
-func bkn_add(title, now) {
+// returns 1 when the task was created in bkn; 0 leaves g_tasks untouched
+// and the failure shows up via sync_error()
+func bkn_add(title, now) (ok) {
+    ok = 0
     body := "{\"title\":" + json(title) + ",\"done\":0,\"created\":" +
         str(now) + ",\"_mtime\":" + str(now) + "}"
-    resp := bkn_req("POST", "/v1/store/m365/tasks", body)
+    _, resp, err := bkn_req("POST", "/v1/store/m365/tasks", body)
+    if err != "" { return ok }
     id := jstr(resp, ".record.id")
-    if id == "" { return }
+    if id == "" {
+        g_bkn_err = "POST /v1/store/m365/tasks: no record.id in response"
+        g_bkn_err_at = now_ms()
+        return ok
+    }
     g_tasks = append(g_tasks, Task{id: id, title: title, done: 0, created: now})
     g_tasks = sort_tasks(g_tasks)
+    ok = 1
+    return ok
 }
 
 func bkn_set_done(id, nd, now) {
-    bkn_req("PATCH", "/v1/store/m365/tasks/" + id,
+    _, _, err := bkn_req("PATCH", "/v1/store/m365/tasks/" + id,
         "{\"done\":" + str(nd) + ",\"_mtime\":" + str(now) + "}")
+    if err != "" { return }
     i := 0
     while i < len(g_tasks) {
         if g_tasks[i].id == id {
@@ -141,11 +192,16 @@ func bkn_set_done(id, nd, now) {
 
 func bkn_del(id) {
     // tombstone first so suite sync propagates the delete instead of
-    // resurrecting the record on the next pass
+    // resurrecting the record on the next pass; if it fails, keep the
+    // task so the delete can be retried — deleting without it is how
+    // records came back
     now := now_ms()
-    bkn_req("POST", "/v1/store/sync/tombstones",
+    _, _, err := bkn_req("POST", "/v1/store/sync/tombstones",
         "{\"ref\":\"m365/tasks\",\"id\":" + json(id) + ",\"_mtime\":" + str(now) + "}")
-    bkn_req("DELETE", "/v1/store/m365/tasks/" + id, "")
+    if err != "" { return }
+    st2, _, err2 := bkn_req("DELETE", "/v1/store/m365/tasks/" + id, "")
+    // 404 means the record is already gone — the delete is done
+    if err2 != "" && st2 != 404 { return }
     keep := []Task{}
     i := 0
     while i < len(g_tasks) {
@@ -225,6 +281,56 @@ func sql_del(id) {
     sql_refresh()
 }
 
+// push every sqlite task into bkn (bkn assigns fresh ids); false if any
+// write fails — the caller stays on sqlite rather than split the data
+func sql_migrate_to_bkn() (ok) {
+    ok = true
+    d := db()
+    if d == 0 { return ok }
+    rows := sqlite_query(d, "SELECT title, done, created FROM tasks")
+    if rows == "[]" { return ok }
+    if rows == "" { return false }
+    i := 0
+    while true {
+        r, e := json_get(rows, "[" + str(i) + "]")
+        if e != "" { break }
+        body := "{\"title\":" + json(jstr(r, ".title")) +
+            ",\"done\":" + str(jint(r, ".done")) +
+            ",\"created\":" + str(jint(r, ".created")) +
+            ",\"_mtime\":" + str(now_ms()) + "}"
+        _, _, err := bkn_req("POST", "/v1/store/m365/tasks", body)
+        if err != "" { return false }
+        i = i + 1
+    }
+    return ok
+}
+
+// bkn may have been down when probe() picked sqlite: re-check every 60s
+// and, once it answers, fold pending local tasks into it and switch —
+// the fallback never becomes a silent second source of truth
+func bkn_maybe_takeover() {
+    if g_backend != 2 || g_backend_forced != 0 { return }
+    if now_ms() - g_reprobe_at < 60000 { return }
+    g_reprobe_at = now_ms()
+    u := bkn_endpoint()
+    if u == "" { return }
+    st, _, _ := http_get(u + "/_health")
+    if st != 200 { return }
+    if !sql_migrate_to_bkn() { return }
+    g_backend = 1
+    bkn_refresh()
+}
+
+// reason the last bkn call failed, for the UI badge; "" when healthy or
+// when the failure is older than ~30s (ongoing failures keep refreshing
+// the timestamp, so a dead backend stays flagged)
+func sync_error() (s) {
+    s = ""
+    if g_bkn_err == "" { return s }
+    if now_ms() - g_bkn_err_at > 30000 { return s }
+    return g_bkn_err
+}
+
 // --- public API (used by app.src) ---------------------------------------
 
 func task_list() (ts) {
@@ -239,20 +345,26 @@ func task_list() (ts) {
     if now_ms() - g_poll > 1000 {
         sql_refresh()
         g_poll = now_ms()
+        bkn_maybe_takeover()
     }
     return g_tasks
 }
 
-func add_task(title) {
+// returns 1 when the task was stored; 0 means the write failed (bkn down
+// or rejected) — the caller keeps the draft and sync_error() says why
+func add_task(title) (ok) {
+    ok = 0
     t := trim(title)
-    if t == "" { return }
+    if t == "" { return ok }
     probe()
     now := now_ms()
     if g_backend == 1 {
-        bkn_add(t, now)
+        ok = bkn_add(t, now)
     } else {
         sql_add(t, now)
+        ok = 1
     }
+    return ok
 }
 
 func toggle_task(id) {
