@@ -16,8 +16,9 @@ A get-things-done task list for [machin-365](https://github.com/javimosch/machin
     — used when no bkn endpoint is configured or reachable.
 - Force a backend with `MDK_TASKS_BACKEND=bkn|sqlite`, or point at any bkn
   with `MDK_TASKS_BKN_URL` + `MDK_TASKS_BKN_TOKEN`.
-- Note: **deletes do not propagate through suite sync yet** (tombstones
-  pending) — a task deleted locally can reappear after sync.
+- Deletes propagate through suite sync via `sync/tombstones` markers
+  (written before the DELETE) — a task deleted locally stays deleted on
+  synced devices.
 - Add (Enter or button), toggle done, delete, filter Active/Done/All
 
 ## Build

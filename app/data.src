@@ -16,7 +16,8 @@
 // `machin-365 sync` changes appear without restart. Every write sets
 // _mtime (ms) — that is the field suite sync uses for last-writer-wins.
 // Deletes propagate through sync/tombstones: bkn_del writes the tombstone
-// BEFORE the DELETE, and only mutates g_tasks when both land.
+// (compound "ref|id" doc id) BEFORE the DELETE, and only mutates g_tasks
+// when both land.
 //
 // Writes are honest: a failed bkn call never touches g_tasks, the reason
 // is kept in g_bkn_err for the UI badge (sync_error), and consecutive
@@ -208,10 +209,13 @@ func bkn_del(id) {
     // tombstone first so suite sync propagates the delete instead of
     // resurrecting the record on the next pass; if it fails, keep the
     // task so the delete can be retried — deleting without it is how
-    // records came back
+    // records came back. The tombstone's own id is the compound
+    // "ref|id" — a bare target id would let same-id deletes in other
+    // collections overwrite each other and resurrect.
     now := now_ms()
     _, _, err := bkn_req("POST", "/v1/store/sync/tombstones",
-        "{\"ref\":\"m365/tasks\",\"id\":" + json(id) + ",\"_mtime\":" + str(now) + "}")
+        "{\"ref\":\"m365/tasks\",\"id\":" + json("m365/tasks|" + id) +
+        ",\"_mtime\":" + str(now) + "}")
     if err != "" { return }
     st2, _, err2 := bkn_req("DELETE", "/v1/store/m365/tasks/" + id, "")
     // 404 means the record is already gone — the delete is done
