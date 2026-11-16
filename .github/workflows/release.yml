@@ -37,7 +37,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake pkg-config \
-            libfreetype6-dev libharfbuzz-dev libgl1-mesa-dev
+            libfreetype6-dev libharfbuzz-dev libgl1-mesa-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxinerama-dev libwayland-dev wayland-protocols \
+            libxkbcommon-dev
 
       - name: Install machin v0.142.0
         run: |
