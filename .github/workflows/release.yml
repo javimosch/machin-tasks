@@ -40,7 +40,7 @@ jobs:
             libfreetype6-dev libharfbuzz-dev libgl1-mesa-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxi-dev libxinerama-dev libwayland-dev wayland-protocols \
-            libxkbcommon-dev
+            libxkbcommon-dev libxss-dev libxtst-dev
 
       - name: Install machin v0.142.0
         run: |
