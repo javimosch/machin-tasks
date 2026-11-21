@@ -65,6 +65,7 @@ func task_row(t) (act) {
 }
 
 func view() {
+    ensure_wake()
     tasks := task_list()
     filter := state_str("filter", "active")
     open := 0

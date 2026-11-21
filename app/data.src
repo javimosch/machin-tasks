@@ -25,6 +25,13 @@
 // without an app restart. While on the sqlite fallback an unforced
 // backend re-probes every 60s and folds pending local tasks into bkn
 // when it comes up, so data never silently splits across backends.
+//
+// Idle frames: all of the above runs inside view(), which release builds
+// only reach when an SDL event arrives — wake.src pushes one a second so
+// the pollers keep their cadence while the app sits untouched. And when
+// probe() picks bkn at launch, bkn_fold_sqlite() folds any rows sqlite
+// still holds into bkn up front, so fallback data is neither invisible
+// nor re-POSTed as duplicates by a later takeover.
 
 type Task struct { id string  title string  done int  created int }
 type BknCfg struct { local_port int  local_token string }
@@ -300,12 +307,15 @@ func sql_del(id) {
 }
 
 // push every sqlite task into bkn (bkn assigns fresh ids); false if any
-// write fails — the caller stays on sqlite rather than split the data
+// write fails — the caller stays on sqlite rather than split the data.
+// Each row is deleted as soon as its POST lands, so a mid-migration
+// failure leaves only the unmigrated tail: the next attempt resumes
+// instead of re-POSTing what already made it.
 func sql_migrate_to_bkn() (ok) {
     ok = true
     d := db()
     if d == 0 { return ok }
-    rows := sqlite_query(d, "SELECT title, done, created FROM tasks")
+    rows := sqlite_query(d, "SELECT id, title, done, created FROM tasks")
     if rows == "[]" { return ok }
     if rows == "" { return false }
     i := 0
@@ -318,6 +328,7 @@ func sql_migrate_to_bkn() (ok) {
             ",\"_mtime\":" + str(now_ms()) + "}"
         _, _, err := bkn_req("POST", "/v1/store/m365/tasks", body)
         if err != "" { return false }
+        sqlite_exec(d, "DELETE FROM tasks WHERE id = ?", []string{str(jint(r, ".id"))})
         i = i + 1
     }
     return ok
@@ -339,6 +350,22 @@ func bkn_maybe_takeover() {
     bkn_refresh()
 }
 
+var g_folded = 0
+
+// probe() picks bkn whenever /_health answers at launch, but rows still
+// sitting in sqlite (written while bkn was down) would stay invisible —
+// and a later sqlite-mode takeover would re-POST them as duplicates.
+// Fold them once, before the first refresh; rows delete as they land,
+// so a failure simply retries the remainder on the next launch. The stat
+// check keeps bkn-primary installs from growing an empty sqlite file.
+func bkn_fold_sqlite() {
+    if g_folded != 0 || g_backend_forced != 0 { return }
+    g_folded = 1
+    fk, _, _ := stat(db_path())
+    if fk != 1 { return }
+    sql_migrate_to_bkn()
+}
+
 // reason the last bkn call failed, for the UI badge; "" when healthy or
 // when the failure is older than ~30s (ongoing failures keep refreshing
 // the timestamp, so a dead backend stays flagged)
@@ -354,6 +381,7 @@ func sync_error() (s) {
 func task_list() (ts) {
     probe()
     if g_backend == 1 {
+        bkn_fold_sqlite()
         if now_ms() - g_poll > 5000 {
             bkn_refresh()
             g_poll = now_ms()
