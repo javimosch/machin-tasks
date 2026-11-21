@@ -1,0 +1,40 @@
+// wake.src — keep the frame loop ticking while the app sits idle.
+//
+// Release builds (MDK_STATIC) park in SDL_WaitEventTimeout(-1): with no
+// input, view() never runs, so data.src's 5s bkn re-poll and 60s
+// sqlite→bkn takeover would stall until the next click or key. A
+// background goroutine pushes an SDL user event once a second instead;
+// any queued event wakes the wait and marks the frame dirty, so view()
+// runs ~1fps and the pollers keep their cadence for the cost of a single
+// rendered frame per second — far cheaper than animate(), which would
+// render every display refresh.
+//
+// SDL_PushEvent is thread-safe and accepts any type in the user range
+// (0x8000+); the host ignores the payload — only that an event arrived.
+// The 128-byte buffer is zeroed by alloc(): `type` is the first u32 and
+// SDL stamps the timestamp itself. Resolves in both build modes — the
+// dev host is linked -rdynamic (static SDL symbols stay visible to the
+// dlopen'd app .so) and release links libSDL3.a next to app.o.
+
+extern "SDL3" {
+    fn SDL_PushEvent(ptr)
+}
+
+func wake_tick() {
+    ev := alloc(128)        // sizeof(SDL_Event)
+    poke_u32(ev, 0, 32768)  // SDL_EVENT_USER
+    for {
+        sleep(1000)
+        SDL_PushEvent(ev)
+    }
+}
+
+// spawn the ticker once per host process — the state store survives dev
+// reloads, so an edit doesn't pile up extra tickers (a stale module's
+// goroutine keeps pushing; it calls the same SDL entry point, harmless)
+func ensure_wake() {
+    if state_int("wake_started", 0) == 0 {
+        set_int("wake_started", 1)
+        go wake_tick()
+    }
+}
