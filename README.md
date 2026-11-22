@@ -24,7 +24,9 @@ A get-things-done task list for [machin-365](https://github.com/javimosch/machin
 ## Build
 
 Requires a [machin-desktop](https://github.com/javimosch/machin-desktop)
-checkout (framework + SDL3/OpenGL host + `mdk` tool) and `machin` on PATH:
+checkout (framework + SDL3/OpenGL host + `mdk` tool) and `machin` >= v0.141.0
+on PATH — the framework uses `poke_i64` (javimosch/machin#680), and
+`build.sh` checks the version up front with an upgrade hint:
 
 ```sh
 git clone https://github.com/javimosch/machin-tasks
