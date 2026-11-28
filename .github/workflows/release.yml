@@ -7,8 +7,8 @@ name: release
 # binaries plus SHA256SUMS.txt. Asset names match catalog.json:
 # machin-tasks-linux-<arch> (no version in the filename).
 #
-# No headless smoke test: the binary is a GUI app and cannot meaningfully
-# run without a display. ci.yml's `mdk check` covers encode-time errors;
+# ci/check-starts.sh starts each binary under a virtual display on the
+# supported systems. ci.yml's `mdk check` covers encode-time errors;
 # catalog.json sha256 is verified by `machin-365 install` on the user side.
 
 on:
@@ -25,12 +25,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Both arches build on Ubuntu 24.04 (glibc 2.39) so the shipped
-          # binaries keep that floor — ubuntu-latest moved to glibc 2.43 and
-          # produced amd64 assets that would not start on 24.04 LTS (#5).
-          - runner: ubuntu-24.04
+          # Build on the oldest system we support: glibc is only compatible
+          # forwards, so a binary built on 22.04 (glibc 2.35) also starts on
+          # 24.04, and not the other way round.
+          - runner: ubuntu-22.04
             arch: amd64
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-22.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -66,7 +66,7 @@ jobs:
           file "dist/machin-tasks-linux-${{ matrix.arch }}"
 
       # Guard the compatibility floor: fail the release build if a binary
-      # requires a glibc newer than Ubuntu 24.04's 2.39.
+      # requires a glibc newer than Ubuntu 22.04's 2.35.
       - name: Check glibc requirement
         run: |
           set -euo pipefail
@@ -75,10 +75,13 @@ jobs:
             | sed 's/^GLIBC_//' | sort -uV | tail -1 || true)
           echo "highest glibc symbol required: ${MAX:-none}"
           if [ -n "$MAX" ] && \
-             [ "$(printf '%s\n%s\n' "$MAX" 2.39 | sort -V | tail -1)" != "2.39" ]; then
-            echo "::error::$BIN requires GLIBC_$MAX — above the Ubuntu 24.04 (glibc 2.39) floor"
+             [ "$(printf '%s\n%s\n' "$MAX" 2.35 | sort -V | tail -1)" != "2.35" ]; then
+            echo "::error::$BIN requires GLIBC_$MAX — above the Ubuntu 22.04 (glibc 2.35) floor"
             exit 1
           fi
+
+      - name: Check it starts on 22.04 and 24.04
+        run: ci/check-starts.sh "dist/machin-tasks-linux-${{ matrix.arch }}"
 
       - uses: actions/upload-artifact@v4
         with:
